@@ -31,6 +31,7 @@ let aiOpen = false;
 let aiChat = null;
 let aiLoading = false;
 let aiFocusedAttemptId = null;
+let activeAiAction = null;
 
 function setSidebarCollapsed(collapsed) {
   sidebarCollapsed = collapsed;
@@ -542,6 +543,7 @@ function renderAiDrawer() {
   aiForm.querySelector("button").disabled = !configured || aiLoading;
   aiDrawer.querySelectorAll("[data-ai-action]").forEach((button) => {
     button.disabled = !configured || aiLoading;
+    button.classList.toggle("active", aiLoading && button.dataset.aiAction === activeAiAction);
   });
   aiArtifacts.innerHTML = (aiChat?.artifacts || [])
     .slice(0, 3)
@@ -605,10 +607,11 @@ async function openAiDrawer() {
   await loadAiChat();
 }
 
-async function sendAiMessage(message, attemptId = null) {
+async function sendAiMessage(message, attemptId = null, action = "chat") {
   const paper = selectedPaper();
   if (!paper || !message || aiLoading) return;
   aiLoading = true;
+  activeAiAction = action;
   aiStatus.textContent = "AI 正在分析...";
   renderAiDrawer();
   try {
@@ -623,14 +626,16 @@ async function sendAiMessage(message, attemptId = null) {
     aiStatus.textContent = error.message;
   } finally {
     aiLoading = false;
+    activeAiAction = null;
     renderAiDrawer();
   }
 }
 
-async function summarizeWithAi(attemptId = null) {
+async function summarizeWithAi(attemptId = null, action = attemptId ? "attempt-summary" : "paper-summary") {
   const paper = selectedPaper();
   if (!paper || aiLoading) return;
   aiLoading = true;
+  activeAiAction = action;
   aiStatus.textContent = attemptId ? "AI 正在总结这轮投稿..." : "AI 正在总结投稿历程...";
   renderAiDrawer();
   try {
@@ -649,6 +654,7 @@ async function summarizeWithAi(attemptId = null) {
     aiStatus.textContent = error.message;
   } finally {
     aiLoading = false;
+    activeAiAction = null;
     renderAiDrawer();
   }
 }
@@ -693,7 +699,7 @@ paperList.addEventListener("click", (event) => {
   if (summarizeButton) {
     const attemptId = Number(summarizeButton.dataset.aiSummarizeAttempt);
     setAiFocusedAttempt(attemptId);
-    openAiDrawer().then(() => summarizeWithAi(attemptId));
+    openAiDrawer().then(() => summarizeWithAi(attemptId, "attempt-summary"));
     return;
   }
   const card = event.target.closest(".overview-card");
@@ -720,16 +726,17 @@ aiDrawer.addEventListener("click", (event) => {
   const paper = selectedPaper();
   if (!paper) return;
   if (actionButton.dataset.aiAction === "paper-summary") {
-    summarizeWithAi();
+    summarizeWithAi(null, "paper-summary");
   }
   if (actionButton.dataset.aiAction === "attempt-summary") {
-    summarizeWithAi(currentAiAttempt()?.id || null);
+    summarizeWithAi(currentAiAttempt()?.id || null, "attempt-summary");
   }
   if (actionButton.dataset.aiAction === "revision-advice") {
     const attempt = currentAiAttempt();
     sendAiMessage(
       "请只针对当前轮次投稿的审稿意见，给出下一步修改优先级和具体行动建议。其他投稿轮次只作为对比参考。",
-      attempt?.id || null
+      attempt?.id || null,
+      "revision-advice"
     );
   }
 });

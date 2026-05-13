@@ -960,9 +960,24 @@ main {
 }
 
 .ai-quick-actions button {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: #fff;
   min-height: 34px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.ai-quick-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: #e8f3ef;
+}
+
+.ai-quick-actions button.active {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
 }
 
 .ai-messages {
