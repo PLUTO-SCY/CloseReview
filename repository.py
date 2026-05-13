@@ -335,80 +335,125 @@ def get_paper_chat(paper_id: int) -> dict:
         }
 
 
+def attempt_heading(attempt: sqlite3.Row, index: int | None = None, focused: bool = False) -> str:
+    prefix = "FOCUSED ATTEMPT" if focused else f"Attempt {index}"
+    date = attempt["submitted_at"] or attempt["created_at"] or "Unknown date"
+    venue = attempt["venue"] or "Unknown venue"
+    return f"{prefix}: attempt_id={attempt['id']}, venue={venue}, submitted_at={date}, title={attempt['title']}"
+
+
+def append_attempt_context(conn: sqlite3.Connection, lines: list[str], attempt: sqlite3.Row, index: int | None = None, focused: bool = False) -> None:
+    lines.extend(
+        [
+            "",
+            attempt_heading(attempt, index=index, focused=focused),
+            f"- attempt_id: {attempt['id']}",
+            f"- venue: {attempt['venue'] or 'Unknown venue'}",
+            f"- title: {attempt['title']}",
+            f"- submitted_at: {attempt['submitted_at'] or attempt['created_at'] or 'Unknown'}",
+            f"- decision: {attempt['decision'] or 'Unknown'}",
+            f"- status: {attempt['status'] or 'Unknown'}",
+        ]
+    )
+    abstract = trim_for_context(attempt["abstract"], 1200)
+    if abstract:
+        lines.append(f"- abstract: {abstract}")
+    reviews = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT review_index, reviewer, rating, confidence, summary, strengths,
+                   weaknesses, questions, text
+            FROM clean_reviews
+            WHERE attempt_id = ?
+            ORDER BY review_index
+            """,
+            (attempt["id"],),
+        )
+    ]
+    if not reviews:
+        lines.append("- clean_reviews: none captured")
+        return
+    lines.append("- clean_reviews:")
+    for review in reviews:
+        label_parts = [f"Review {review['review_index']}"]
+        if review["rating"] is not None:
+            label_parts.append(f"score {review['rating']}")
+        if review["confidence"] is not None:
+            label_parts.append(f"confidence {review['confidence']}")
+        lines.append(f"  - {'; '.join(label_parts)}")
+        text = trim_for_context(review["text"], REVIEW_TEXT_LIMIT)
+        if text:
+            lines.append(f"    text: {text}")
+
+
 def paper_context_text(conn: sqlite3.Connection, paper_id: int, attempt_id: int | None = None) -> str:
     paper = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
     if not paper:
         raise ValueError("Paper not found.")
-    if attempt_id:
-        attempt = conn.execute("SELECT paper_id FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
-        if not attempt or attempt["paper_id"] != paper_id:
-            raise ValueError("Attempt not found for this paper.")
 
     authors = json.loads(paper["authors"] or "[]")
     lines = [
         f"Canonical paper title: {paper['title']}",
         f"Authors: {', '.join(authors) if authors else 'Unknown'}",
         "",
-        "Submission attempts are listed from earliest to latest.",
+        "Use only the data below. Do not guess a different attempt.",
     ]
-    attempts = conn.execute(
-        """
-        SELECT *
-        FROM attempts
-        WHERE paper_id = ?
-        ORDER BY COALESCE(submitted_at, created_at) ASC, id ASC
-        """,
-        (paper_id,),
-    )
-    for index, attempt in enumerate(attempts, start=1):
-        selected = " [FOCUSED ATTEMPT]" if attempt_id and attempt["id"] == attempt_id else ""
+    attempts = [
+        row
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM attempts
+            WHERE paper_id = ?
+            ORDER BY COALESCE(submitted_at, created_at) ASC, id ASC
+            """,
+            (paper_id,),
+        )
+    ]
+    focused_attempt = None
+    if attempt_id:
+        focused_attempt = next((attempt for attempt in attempts if attempt["id"] == attempt_id), None)
+        if not focused_attempt:
+            raise ValueError("Attempt not found for this paper.")
         lines.extend(
             [
                 "",
-                f"Attempt {index}{selected}",
-                f"- attempt_id: {attempt['id']}",
-                f"- venue: {attempt['venue'] or 'Unknown venue'}",
-                f"- title: {attempt['title']}",
-                f"- submitted_at: {attempt['submitted_at'] or attempt['created_at'] or 'Unknown'}",
-                f"- decision: {attempt['decision'] or 'Unknown'}",
-                f"- status: {attempt['status'] or 'Unknown'}",
+                "The user is asking about the focused attempt below. Answer about this focused attempt first.",
             ]
         )
-        abstract = trim_for_context(attempt["abstract"], 1200)
-        if abstract:
-            lines.append(f"- abstract: {abstract}")
-        reviews = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT review_index, reviewer, rating, confidence, summary, strengths,
-                       weaknesses, questions, text
-                FROM clean_reviews
-                WHERE attempt_id = ?
-                ORDER BY review_index
-                """,
-                (attempt["id"],),
-            )
-        ]
-        if not reviews:
-            lines.append("- clean_reviews: none captured")
+        append_attempt_context(conn, lines, focused_attempt, focused=True)
+        lines.extend(["", "Other attempts for cross-round context are listed from earliest to latest."])
+    else:
+        lines.extend(["", "Submission attempts are listed from earliest to latest."])
+
+    for index, attempt in enumerate(attempts, start=1):
+        if focused_attempt and attempt["id"] == focused_attempt["id"]:
             continue
-        lines.append("- clean_reviews:")
-        for review in reviews:
-            label_parts = [f"Review {review['review_index']}"]
-            if review["rating"] is not None:
-                label_parts.append(f"score {review['rating']}")
-            if review["confidence"] is not None:
-                label_parts.append(f"confidence {review['confidence']}")
-            lines.append(f"  - {'; '.join(label_parts)}")
-            text = trim_for_context(review["text"], REVIEW_TEXT_LIMIT)
-            if text:
-                lines.append(f"    text: {text}")
+        append_attempt_context(conn, lines, attempt, index=index)
 
     context = "\n".join(lines)
     if len(context) > CONTEXT_TEXT_LIMIT:
         context = context[:CONTEXT_TEXT_LIMIT].rstrip() + "\n[context truncated]"
     return context
+
+
+def attempt_summary_label(conn: sqlite3.Connection, attempt_id: int | None) -> str | None:
+    if not attempt_id:
+        return None
+    attempt = conn.execute(
+        """
+        SELECT id, venue, title, submitted_at, created_at, decision
+        FROM attempts
+        WHERE id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if not attempt:
+        return None
+    date = attempt["submitted_at"] or attempt["created_at"] or "Unknown date"
+    decision = attempt["decision"] or "Unknown decision"
+    return f"{attempt['venue'] or 'Unknown venue'} · {date} · {decision} · {attempt['title']}"
 
 
 def chat_system_prompt() -> str:
@@ -455,10 +500,12 @@ def run_paper_chat(payload: dict) -> dict:
     }
 
 
-def summary_prompt(attempt_id: int | None) -> str:
+def summary_prompt(attempt_id: int | None, attempt_label: str | None = None) -> str:
     if attempt_id:
+        label = f"（{attempt_label}）" if attempt_label else ""
         return (
-            "请总结标记为 [FOCUSED ATTEMPT] 的这一次投稿审稿意见。"
+            f"请总结这一次投稿{label}的审稿意见。"
+            "请只围绕上下文最前面的 FOCUSED ATTEMPT 作答；其他 attempts 只用于对比参考。"
             "请包含：总体评价、主要优点、主要问题、分数/信心、decision、以及下一轮修改优先级。"
         )
     return (
@@ -474,10 +521,11 @@ def summarize_paper(payload: dict) -> dict:
         raise ValueError("paper_id is required.")
     if not llm_configured():
         raise ValueError("Missing DEEPSEEK_API_KEY. Add it to `.env.local` and restart PaperTrail.")
-    prompt = summary_prompt(attempt_id)
     with connect() as conn:
         session = ensure_chat_session(conn, paper_id)
+        attempt_label = attempt_summary_label(conn, attempt_id)
         context = paper_context_text(conn, paper_id, attempt_id)
+    prompt = summary_prompt(attempt_id, attempt_label)
 
     answer = chat_completion(
         [
