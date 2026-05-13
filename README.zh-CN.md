@@ -6,7 +6,7 @@
 
 ## 为什么需要 CloseReview？
 
-顶会论文往往需要多次转投。标题可能改、会议可能变、审稿意见也分散在不同 OpenReview 页面中。CloseReview 会把这些零散记录整理成一个可浏览、可合并、可分析的论文工作台：时间线、审稿意见、投稿密度可视化、手动归类和 AI 分析都在一个地方。
+顶会论文常常涉及多次转投。标题可能改、会议可能变、审稿意见也分散在不同 OpenReview 页面中。CloseReview 会把这些零散记录整理成一个可浏览、可合并、可分析的论文工作台：时间线、审稿意见、投稿密度可视化、手动归类和 AI 分析都在一个地方。
 
 ## 功能
 
@@ -87,7 +87,7 @@ OpenReview 同步需要账号密码；AI 分析需要 `DEEPSEEK_API_KEY`。
 
 ### 3. 安装依赖
 
-项目本身使用 Python 标准库启动本地服务和 SQLite。若需要实时导入 OpenReview 数据，请安装官方 OpenReview 客户端：
+项目本身使用 Python 标准库启动本地服务、管理 SQLite 数据库，并调用 DeepSeek-compatible API。唯一的第三方 Python 依赖是官方 OpenReview 客户端，用于实时导入 OpenReview 数据和账号同步：
 
 ```bash
 pip3 install openreview-py

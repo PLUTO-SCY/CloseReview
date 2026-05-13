@@ -6,7 +6,7 @@
 
 ## Why CloseReview?
 
-Top-conference papers often go through several submissions before acceptance. Titles change, venues change, reviewers change, and the memory of earlier feedback fades quickly. CloseReview turns those scattered OpenReview records into an organized workspace with timelines, review summaries, activity visualizations, manual paper grouping, and AI-assisted analysis.
+Top-conference papers may involve multiple resubmission rounds. Titles change, venues change, reviewers change, and the memory of earlier feedback fades quickly. CloseReview turns those scattered OpenReview records into an organized workspace with timelines, review summaries, activity visualizations, manual paper grouping, and AI-assisted analysis.
 
 ## Features
 
@@ -87,7 +87,7 @@ OpenReview sync requires your OpenReview account credentials. AI analysis requir
 
 ### 3. Install Dependencies
 
-The app itself uses Python standard library for the local web server and SQLite. Install the official OpenReview client if you want live OpenReview import and account sync:
+The app itself uses Python standard library for the local web server, SQLite storage, and DeepSeek-compatible API calls. The only third-party Python dependency is the official OpenReview client, which is required for live OpenReview import and account sync:
 
 ```bash
 pip3 install openreview-py
