@@ -8,15 +8,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from db import init_db
+from llm_client import LLMError
 from openreview_sync import OpenReviewImportError, save_openreview_thread, sync_openreview_account
 from paths import PUBLIC_DIR, ROOT
 from repository import (
     create_manual_paper,
     delete_attempt,
+    get_paper_chat,
     list_activities,
     list_papers,
     merge_papers,
     move_attempt,
+    run_paper_chat,
+    summarize_paper,
     update_paper_title,
 )
 from utils import extract_forum_id
@@ -33,6 +37,19 @@ def load_env_file() -> None:
                 continue
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def paper_api_id(path: str, suffix: str) -> int | None:
+    prefix = "/api/papers/"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    value = path[len(prefix) : -len(suffix) if suffix else None]
+    if not value or "/" in value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -60,6 +77,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/activities":
             self.send_json({"activities": list_activities()})
+            return
+        paper_id = paper_api_id(parsed.path, "/chat")
+        if paper_id:
+            self.send_json({"ok": True, **get_paper_chat(paper_id)})
             return
         if parsed.path == "/":
             self.serve_file(PUBLIC_DIR / "index.html", "text/html; charset=utf-8")
@@ -90,6 +111,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             payload = self.read_json()
+            paper_chat_id = paper_api_id(self.path, "/chat")
+            if paper_chat_id:
+                payload["paper_id"] = paper_chat_id
+                self.send_json({"ok": True, **run_paper_chat(payload)})
+                return
+            paper_summary_id = paper_api_id(self.path, "/llm/summarize")
+            if paper_summary_id:
+                payload["paper_id"] = paper_summary_id
+                self.send_json({"ok": True, **summarize_paper(payload)})
+                return
             if self.path == "/api/openreview/import-url":
                 value = payload.get("url") or payload.get("forum_id") or ""
                 forum_id = extract_forum_id(value)
@@ -117,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
         except (ValueError, OpenReviewImportError) as exc:
+            self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except LLMError as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)

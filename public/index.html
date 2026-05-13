@@ -51,6 +51,7 @@
             <h2 id="view-title">Paper overview</h2>
           </div>
           <button id="back-overview" type="button" class="secondary hidden">返回总览</button>
+          <button id="ai-toggle" type="button" class="secondary hidden">AI 分析</button>
           <button id="organize-toggle" type="button" class="secondary">整理模式</button>
           <div class="stats">
             <div><strong id="paper-count">0</strong><span>papers</span></div>
@@ -60,6 +61,27 @@
         </header>
         <section id="papers" class="papers"></section>
       </main>
+      <aside id="ai-drawer" class="ai-drawer" aria-hidden="true">
+        <div class="ai-drawer-header">
+          <div>
+            <p class="eyebrow">AI Assistant</p>
+            <h3 id="ai-title">Paper analysis</h3>
+          </div>
+          <button id="ai-close" type="button" class="secondary">关闭</button>
+        </div>
+        <div id="ai-artifacts" class="ai-artifacts"></div>
+        <div class="ai-quick-actions">
+          <button type="button" data-ai-action="paper-summary">总结投稿历程</button>
+          <button type="button" data-ai-action="latest-summary" class="secondary">总结最新一轮</button>
+          <button type="button" data-ai-action="revision-advice" class="secondary">修改建议</button>
+        </div>
+        <div id="ai-status" class="status"></div>
+        <div id="ai-messages" class="ai-messages"></div>
+        <form id="ai-form" class="ai-form">
+          <textarea id="ai-input" name="message" placeholder="问问这篇 paper 的审稿意见、改投策略、某轮投稿的问题..." rows="3"></textarea>
+          <button type="submit">发送</button>
+        </form>
+      </aside>
     </div>
     <script src="/app.js"></script>
   </body>

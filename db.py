@@ -105,5 +105,39 @@ def init_db() -> None:
                 FOREIGN KEY (attempt_id) REFERENCES attempts(id) ON DELETE CASCADE,
                 UNIQUE(attempt_id, review_index)
             );
+
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_scope TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS llm_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_id INTEGER NOT NULL,
+                attempt_id INTEGER,
+                artifact_type TEXT NOT NULL,
+                scope_key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                model TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE,
+                FOREIGN KEY (attempt_id) REFERENCES attempts(id) ON DELETE CASCADE,
+                UNIQUE(paper_id, artifact_type, scope_key)
+            );
             """
         )

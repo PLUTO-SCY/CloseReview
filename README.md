@@ -13,6 +13,7 @@ A local-first paper submission tracker for OpenReview workflows.
 - Paper detail view with full submission timeline and reviews
 - Submission visualization dashboard with OpenReview activity density heatmap, year filtering, month labels, monthly rhythm, outcomes, and venue ranking
 - Clean review extraction that separates first official reviews from rebuttals, responses, comments, decisions, and meta-reviews
+- LLM-assisted paper analysis drawer with saved chat history, paper-level summaries, and attempt-level summaries
 - Paper-level submission timeline with reviews, scores, and decisions when OpenReview exposes them
 - Organize mode for title changes across resubmissions:
   - rename a paper's canonical title
@@ -26,6 +27,7 @@ A local-first paper submission tracker for OpenReview workflows.
 - `app.py`: HTTP routes and static file serving
 - `db.py`: SQLite connection and schema migration
 - `repository.py`: paper listing, manual edits, merge/move/delete operations
+- `llm_client.py`: DeepSeek/OpenAI-compatible chat completion client
 - `openreview_sync.py`: OpenReview discovery, import, review parsing, sync
 - `review_cleaner.py`: cached extraction of clean official reviews for display
 - `utils.py`: shared parsing, time, text, and normalization helpers
@@ -43,6 +45,9 @@ Fill in:
 OPENREVIEW_USERNAME=your_openreview_email
 OPENREVIEW_PASSWORD=your_openreview_password
 OPENREVIEW_API_VERSION=auto
+DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
 ```
 
 Install the official OpenReview Python client when you want live imports:
@@ -70,8 +75,19 @@ Open the app and click `整理模式`.
 
 Re-running OpenReview sync will preserve your manual organization for existing attempts.
 
+## AI Analysis
+
+Open a paper detail page and click `AI 分析`.
+
+- `总结投稿历程` summarizes the paper's full resubmission history.
+- `总结最新一轮` summarizes the newest attempt.
+- `总结本轮` next to a timeline item summarizes that specific attempt.
+- Free-form chat uses the current paper's attempts, decisions, scores, and clean reviews as context.
+
+Chat messages and generated summaries are stored in the local SQLite database.
+
 ## Notes
 
 - `.env.local` and the SQLite database are ignored by git.
-- Do not paste OpenReview credentials into chat or commit them.
+- Do not paste OpenReview credentials or LLM API keys into chat or commit them.
 - Some old OpenReview venues use the legacy API, so the importer tries API 2 first and then the legacy API when `OPENREVIEW_API_VERSION=auto`.

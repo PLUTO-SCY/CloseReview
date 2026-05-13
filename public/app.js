@@ -6,6 +6,15 @@ const importStatus = document.querySelector("#import-status");
 const syncButton = document.querySelector("#sync-account");
 const syncStatus = document.querySelector("#sync-status");
 const organizeToggle = document.querySelector("#organize-toggle");
+const aiToggle = document.querySelector("#ai-toggle");
+const aiDrawer = document.querySelector("#ai-drawer");
+const aiClose = document.querySelector("#ai-close");
+const aiTitle = document.querySelector("#ai-title");
+const aiArtifacts = document.querySelector("#ai-artifacts");
+const aiStatus = document.querySelector("#ai-status");
+const aiMessages = document.querySelector("#ai-messages");
+const aiForm = document.querySelector("#ai-form");
+const aiInput = document.querySelector("#ai-input");
 const backOverview = document.querySelector("#back-overview");
 const viewTitle = document.querySelector("#view-title");
 const navOverview = document.querySelector("#nav-overview");
@@ -18,6 +27,9 @@ let organizeMode = false;
 let selectedPaperId = null;
 let visualYear = "all";
 let sidebarCollapsed = localStorage.getItem("papertrail.sidebar") === "collapsed";
+let aiOpen = false;
+let aiChat = null;
+let aiLoading = false;
 
 function setSidebarCollapsed(collapsed) {
   sidebarCollapsed = collapsed;
@@ -71,6 +83,10 @@ function getSelectedPaperId() {
 function currentView() {
   if (window.location.hash === "#visuals") return "visuals";
   return getSelectedPaperId() ? "detail" : "overview";
+}
+
+function selectedPaper() {
+  return currentPapers.find((paper) => paper.id === selectedPaperId) || null;
 }
 
 function formatDate(value) {
@@ -178,12 +194,17 @@ function attemptControls(attempt, paper) {
   `;
 }
 
+function aiAttemptButton(attempt) {
+  return `<button type="button" class="ai-attempt-button" data-ai-summarize-attempt="${attempt.id}">总结本轮</button>`;
+}
+
 function renderOverview(papers) {
   viewTitle.textContent = "Paper overview";
   backOverview.classList.add("hidden");
+  aiToggle.classList.add("hidden");
   organizeToggle.classList.add("hidden");
   paperList.classList.add("overview-grid");
-  paperList.classList.remove("detail-view");
+  paperList.classList.remove("detail-view", "visual-view");
 
   paperList.innerHTML = papers
     .map((paper) => {
@@ -212,8 +233,9 @@ function renderOverview(papers) {
 function renderDetail(paper) {
   viewTitle.textContent = "Paper detail";
   backOverview.classList.remove("hidden");
+  aiToggle.classList.remove("hidden");
   organizeToggle.classList.remove("hidden");
-  paperList.classList.remove("overview-grid");
+  paperList.classList.remove("overview-grid", "visual-view");
   paperList.classList.add("detail-view");
 
   const authors = Array.isArray(paper.authors) ? paper.authors.join(", ") : "";
@@ -244,6 +266,7 @@ function renderDetail(paper) {
               <span>${escapeHtml(attempt.status || "imported")}</span>
               ${attempt.average_rating == null ? "" : `<span class="score">avg ${attempt.average_rating}</span>`}
               ${attempt.decision ? `<span class="${accepted ? "decision-pill" : ""}">${escapeHtml(attempt.decision)}</span>` : ""}
+              ${aiAttemptButton(attempt)}
             </div>
             <div class="attempt-title">${title}</div>
             ${attemptControls(attempt, paper)}
@@ -274,6 +297,7 @@ function renderDetail(paper) {
 function renderVisuals(papers, activities) {
   viewTitle.textContent = "Submission visuals";
   backOverview.classList.add("hidden");
+  aiToggle.classList.add("hidden");
   organizeToggle.classList.add("hidden");
   navOverview.classList.remove("active");
   navVisuals.classList.add("active");
@@ -453,6 +477,7 @@ function render(papers) {
   }
 
   if (currentView() === "visuals") {
+    closeAiDrawer();
     renderVisuals(papers, currentActivities);
     return;
   }
@@ -460,7 +485,11 @@ function render(papers) {
   const selected = papers.find((paper) => paper.id === selectedPaperId);
   if (selected) {
     renderDetail(selected);
+    if (aiOpen) {
+      aiTitle.textContent = selected.title;
+    }
   } else {
+    closeAiDrawer();
     renderOverview(papers);
   }
 }
@@ -484,6 +513,127 @@ async function loadPapers() {
   render(papersData.papers || []);
 }
 
+function renderAiDrawer() {
+  const paper = selectedPaper();
+  aiDrawer.classList.toggle("open", aiOpen);
+  aiDrawer.setAttribute("aria-hidden", aiOpen ? "false" : "true");
+  aiToggle.classList.toggle("active", aiOpen);
+  if (!aiOpen || !paper) return;
+
+  aiTitle.textContent = paper.title;
+  const configured = aiChat?.configured !== false;
+  aiInput.disabled = !configured || aiLoading;
+  aiForm.querySelector("button").disabled = !configured || aiLoading;
+  aiDrawer.querySelectorAll("[data-ai-action]").forEach((button) => {
+    button.disabled = !configured || aiLoading;
+  });
+  aiArtifacts.innerHTML = (aiChat?.artifacts || [])
+    .slice(0, 3)
+    .map((artifact) => {
+      const label = artifact.artifact_type === "attempt_summary" ? `投稿总结 #${artifact.scope_key}` : "论文总结";
+      return `
+        <article class="ai-artifact">
+          <strong>${escapeHtml(label)}</strong>
+          <p>${escapeHtml(artifact.content)}</p>
+        </article>
+      `;
+    })
+    .join("");
+  if (!configured) {
+    aiStatus.textContent = "请在 .env.local 中配置 DEEPSEEK_API_KEY，然后重启服务。";
+  } else if (!aiLoading && !aiStatus.textContent) {
+    aiStatus.textContent = "已连接当前 paper 的全部投稿上下文。";
+  }
+  aiMessages.innerHTML = (aiChat?.messages || [])
+    .map(
+      (message) => `
+        <article class="ai-message ${message.role}">
+          <strong>${message.role === "assistant" ? "AI" : "You"}</strong>
+          <p>${escapeHtml(message.content)}</p>
+        </article>
+      `
+    )
+    .join("");
+  aiMessages.scrollTop = aiMessages.scrollHeight;
+}
+
+function closeAiDrawer() {
+  aiOpen = false;
+  renderAiDrawer();
+}
+
+async function loadAiChat() {
+  const paper = selectedPaper();
+  if (!paper) return;
+  aiStatus.textContent = "Loading AI context...";
+  renderAiDrawer();
+  try {
+    const response = await fetch(`/api/papers/${paper.id}/chat`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Failed to load chat.");
+    aiChat = data;
+    aiStatus.textContent = "";
+  } catch (error) {
+    aiStatus.textContent = error.message;
+  } finally {
+    renderAiDrawer();
+  }
+}
+
+async function openAiDrawer() {
+  aiOpen = true;
+  renderAiDrawer();
+  await loadAiChat();
+}
+
+async function sendAiMessage(message, attemptId = null) {
+  const paper = selectedPaper();
+  if (!paper || !message || aiLoading) return;
+  aiLoading = true;
+  aiStatus.textContent = "AI 正在分析...";
+  renderAiDrawer();
+  try {
+    const data = await postJson(`/api/papers/${paper.id}/chat`, {
+      message,
+      attempt_id: attemptId,
+    });
+    aiChat = { ...(aiChat || {}), messages: data.messages };
+    aiInput.value = "";
+    aiStatus.textContent = "";
+  } catch (error) {
+    aiStatus.textContent = error.message;
+  } finally {
+    aiLoading = false;
+    renderAiDrawer();
+  }
+}
+
+async function summarizeWithAi(attemptId = null) {
+  const paper = selectedPaper();
+  if (!paper || aiLoading) return;
+  aiLoading = true;
+  aiStatus.textContent = attemptId ? "AI 正在总结这轮投稿..." : "AI 正在总结投稿历程...";
+  renderAiDrawer();
+  try {
+    const data = await postJson(`/api/papers/${paper.id}/llm/summarize`, {
+      attempt_id: attemptId,
+    });
+    aiChat = {
+      ...(aiChat || {}),
+      messages: data.messages,
+      artifacts: data.artifact
+        ? [data.artifact].concat((aiChat?.artifacts || []).filter((artifact) => artifact.id !== data.artifact.id))
+        : aiChat?.artifacts || [],
+    };
+    aiStatus.textContent = "";
+  } catch (error) {
+    aiStatus.textContent = error.message;
+  } finally {
+    aiLoading = false;
+    renderAiDrawer();
+  }
+}
+
 organizeToggle.addEventListener("click", () => {
   organizeMode = !organizeMode;
   render(currentPapers);
@@ -501,6 +651,16 @@ backOverview.addEventListener("click", () => {
   window.location.hash = "";
 });
 
+aiToggle.addEventListener("click", () => {
+  if (aiOpen) {
+    closeAiDrawer();
+  } else {
+    openAiDrawer();
+  }
+});
+
+aiClose.addEventListener("click", closeAiDrawer);
+
 sidebarToggle.addEventListener("click", () => {
   setSidebarCollapsed(!sidebarCollapsed);
 });
@@ -510,6 +670,11 @@ window.addEventListener("hashchange", () => {
 });
 
 paperList.addEventListener("click", (event) => {
+  const summarizeButton = event.target.closest("[data-ai-summarize-attempt]");
+  if (summarizeButton) {
+    openAiDrawer().then(() => summarizeWithAi(Number(summarizeButton.dataset.aiSummarizeAttempt)));
+    return;
+  }
   const card = event.target.closest(".overview-card");
   if (!card) return;
   window.location.hash = `paper=${card.dataset.paperId}`;
@@ -526,6 +691,28 @@ paperList.addEventListener("change", (event) => {
   if (event.target.id !== "visual-year") return;
   visualYear = event.target.value;
   render(currentPapers);
+});
+
+aiDrawer.addEventListener("click", (event) => {
+  const actionButton = event.target.closest("[data-ai-action]");
+  if (!actionButton) return;
+  const paper = selectedPaper();
+  if (!paper) return;
+  if (actionButton.dataset.aiAction === "paper-summary") {
+    summarizeWithAi();
+  }
+  if (actionButton.dataset.aiAction === "latest-summary") {
+    const latest = (paper.attempts || [])[0];
+    summarizeWithAi(latest?.id || null);
+  }
+  if (actionButton.dataset.aiAction === "revision-advice") {
+    sendAiMessage("请基于这篇 paper 的所有投稿和审稿意见，给出下一步修改优先级和具体行动建议。");
+  }
+});
+
+aiForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendAiMessage(new FormData(aiForm).get("message"));
 });
 
 paperList.addEventListener("submit", async (event) => {

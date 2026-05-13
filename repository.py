@@ -2,7 +2,13 @@ import json
 import sqlite3
 
 from db import connect
+from llm_client import chat_completion, llm_configured, llm_model
 from utils import content_value, db_text, normalize_title, now_iso, timestamp_to_iso, truncate_text
+
+
+CONTEXT_TEXT_LIMIT = 32000
+REVIEW_TEXT_LIMIT = 2600
+CHAT_HISTORY_LIMIT = 12
 
 
 def authors_json_from_attempt(attempt: sqlite3.Row) -> str | None:
@@ -229,6 +235,287 @@ def list_papers() -> list[dict]:
                 attempt["average_rating"] = round(sum(ratings) / len(ratings), 2) if ratings else None
             paper["attempts"] = attempts
         return papers
+
+
+def trim_for_context(value, limit: int) -> str:
+    text = db_text(value) or ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n[truncated]"
+
+
+def row_dict(row: sqlite3.Row | None) -> dict | None:
+    return dict(row) if row else None
+
+
+def ensure_chat_session(conn: sqlite3.Connection, paper_id: int) -> dict:
+    paper = conn.execute("SELECT id, title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    if not paper:
+        raise ValueError("Paper not found.")
+    session = conn.execute(
+        "SELECT * FROM chat_sessions WHERE paper_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1",
+        (paper_id,),
+    ).fetchone()
+    if session:
+        return dict(session)
+    timestamp = now_iso()
+    cursor = conn.execute(
+        "INSERT INTO chat_sessions (paper_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (paper_id, "AI analysis", timestamp, timestamp),
+    )
+    return {
+        "id": cursor.lastrowid,
+        "paper_id": paper_id,
+        "title": "AI analysis",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def list_chat_messages(conn: sqlite3.Connection, session_id: int, limit: int | None = None) -> list[dict]:
+    sql = "SELECT id, role, content, source_scope, created_at FROM chat_messages WHERE session_id = ? ORDER BY id"
+    params: tuple = (session_id,)
+    if limit:
+        sql = """
+        SELECT id, role, content, source_scope, created_at
+        FROM (
+            SELECT id, role, content, source_scope, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        )
+        ORDER BY id
+        """
+        params = (session_id, limit)
+    return [dict(row) for row in conn.execute(sql, params)]
+
+
+def save_chat_message(conn: sqlite3.Connection, session_id: int, role: str, content: str, source_scope: str | None = None) -> dict:
+    timestamp = now_iso()
+    cursor = conn.execute(
+        "INSERT INTO chat_messages (session_id, role, content, source_scope, created_at) VALUES (?, ?, ?, ?, ?)",
+        (session_id, role, content, source_scope, timestamp),
+    )
+    conn.execute("UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (timestamp, session_id))
+    return {
+        "id": cursor.lastrowid,
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "source_scope": source_scope,
+        "created_at": timestamp,
+    }
+
+
+def list_llm_artifacts(conn: sqlite3.Connection, paper_id: int) -> list[dict]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT id, paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
+            FROM llm_artifacts
+            WHERE paper_id = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (paper_id,),
+        )
+    ]
+
+
+def get_paper_chat(paper_id: int) -> dict:
+    with connect() as conn:
+        session = ensure_chat_session(conn, paper_id)
+        return {
+            "configured": llm_configured(),
+            "model": llm_model(),
+            "session": session,
+            "messages": list_chat_messages(conn, session["id"]),
+            "artifacts": list_llm_artifacts(conn, paper_id),
+        }
+
+
+def paper_context_text(conn: sqlite3.Connection, paper_id: int, attempt_id: int | None = None) -> str:
+    paper = conn.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
+    if not paper:
+        raise ValueError("Paper not found.")
+    if attempt_id:
+        attempt = conn.execute("SELECT paper_id FROM attempts WHERE id = ?", (attempt_id,)).fetchone()
+        if not attempt or attempt["paper_id"] != paper_id:
+            raise ValueError("Attempt not found for this paper.")
+
+    authors = json.loads(paper["authors"] or "[]")
+    lines = [
+        f"Canonical paper title: {paper['title']}",
+        f"Authors: {', '.join(authors) if authors else 'Unknown'}",
+        "",
+        "Submission attempts are listed from earliest to latest.",
+    ]
+    attempts = conn.execute(
+        """
+        SELECT *
+        FROM attempts
+        WHERE paper_id = ?
+        ORDER BY COALESCE(submitted_at, created_at) ASC, id ASC
+        """,
+        (paper_id,),
+    )
+    for index, attempt in enumerate(attempts, start=1):
+        selected = " [FOCUSED ATTEMPT]" if attempt_id and attempt["id"] == attempt_id else ""
+        lines.extend(
+            [
+                "",
+                f"Attempt {index}{selected}",
+                f"- attempt_id: {attempt['id']}",
+                f"- venue: {attempt['venue'] or 'Unknown venue'}",
+                f"- title: {attempt['title']}",
+                f"- submitted_at: {attempt['submitted_at'] or attempt['created_at'] or 'Unknown'}",
+                f"- decision: {attempt['decision'] or 'Unknown'}",
+                f"- status: {attempt['status'] or 'Unknown'}",
+            ]
+        )
+        abstract = trim_for_context(attempt["abstract"], 1200)
+        if abstract:
+            lines.append(f"- abstract: {abstract}")
+        reviews = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT review_index, reviewer, rating, confidence, summary, strengths,
+                       weaknesses, questions, text
+                FROM clean_reviews
+                WHERE attempt_id = ?
+                ORDER BY review_index
+                """,
+                (attempt["id"],),
+            )
+        ]
+        if not reviews:
+            lines.append("- clean_reviews: none captured")
+            continue
+        lines.append("- clean_reviews:")
+        for review in reviews:
+            label_parts = [f"Review {review['review_index']}"]
+            if review["rating"] is not None:
+                label_parts.append(f"score {review['rating']}")
+            if review["confidence"] is not None:
+                label_parts.append(f"confidence {review['confidence']}")
+            lines.append(f"  - {'; '.join(label_parts)}")
+            text = trim_for_context(review["text"], REVIEW_TEXT_LIMIT)
+            if text:
+                lines.append(f"    text: {text}")
+
+    context = "\n".join(lines)
+    if len(context) > CONTEXT_TEXT_LIMIT:
+        context = context[:CONTEXT_TEXT_LIMIT].rstrip() + "\n[context truncated]"
+    return context
+
+
+def chat_system_prompt() -> str:
+    return (
+        "You are PaperTrail's research assistant for an AI PhD student. "
+        "Answer in Chinese unless the user asks otherwise. Use only the provided PaperTrail context. "
+        "Be concrete: cite venues, dates, scores, reviewer concerns, and decision labels when useful. "
+        "If the context is insufficient, say what is missing instead of inventing details."
+    )
+
+
+def run_paper_chat(payload: dict) -> dict:
+    paper_id = int(payload.get("paper_id") or 0)
+    message = db_text(payload.get("message"))
+    attempt_id = int(payload.get("attempt_id") or 0) or None
+    if not paper_id or not message:
+        raise ValueError("paper_id and message are required.")
+    if not llm_configured():
+        raise ValueError("Missing DEEPSEEK_API_KEY. Add it to `.env.local` and restart PaperTrail.")
+    with connect() as conn:
+        session = ensure_chat_session(conn, paper_id)
+        source_scope = f"attempt:{attempt_id}" if attempt_id else "paper"
+        history = list_chat_messages(conn, session["id"], CHAT_HISTORY_LIMIT)
+        context = paper_context_text(conn, paper_id, attempt_id)
+
+    llm_messages = [
+        {"role": "system", "content": chat_system_prompt()},
+        {"role": "user", "content": f"PaperTrail context:\n\n{context}"},
+    ]
+    llm_messages.extend({"role": item["role"], "content": item["content"]} for item in history if item["role"] in ("user", "assistant"))
+    llm_messages.append({"role": "user", "content": message})
+    answer = chat_completion(llm_messages)
+
+    with connect() as conn:
+        user_message = save_chat_message(conn, session["id"], "user", message, source_scope)
+        assistant_message = save_chat_message(conn, session["id"], "assistant", answer, source_scope)
+        session = row_dict(conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session["id"],)).fetchone())
+        messages = list_chat_messages(conn, session["id"])
+    return {
+        "session": session,
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+        "messages": messages,
+    }
+
+
+def summary_prompt(attempt_id: int | None) -> str:
+    if attempt_id:
+        return (
+            "请总结标记为 [FOCUSED ATTEMPT] 的这一次投稿审稿意见。"
+            "请包含：总体评价、主要优点、主要问题、分数/信心、decision、以及下一轮修改优先级。"
+        )
+    return (
+        "请总结这篇 paper 的完整投稿历程。请包含：各轮投稿时间线、审稿意见如何变化、"
+        "反复出现的问题、最终状态/接收亮点，以及下一步改进建议。"
+    )
+
+
+def summarize_paper(payload: dict) -> dict:
+    paper_id = int(payload.get("paper_id") or 0)
+    attempt_id = int(payload.get("attempt_id") or 0) or None
+    if not paper_id:
+        raise ValueError("paper_id is required.")
+    if not llm_configured():
+        raise ValueError("Missing DEEPSEEK_API_KEY. Add it to `.env.local` and restart PaperTrail.")
+    prompt = summary_prompt(attempt_id)
+    with connect() as conn:
+        session = ensure_chat_session(conn, paper_id)
+        context = paper_context_text(conn, paper_id, attempt_id)
+
+    answer = chat_completion(
+        [
+            {"role": "system", "content": chat_system_prompt()},
+            {"role": "user", "content": f"PaperTrail context:\n\n{context}\n\nTask:\n{prompt}"},
+        ]
+    )
+
+    timestamp = now_iso()
+    artifact_type = "attempt_summary" if attempt_id else "paper_summary"
+    scope_key = str(attempt_id) if attempt_id else "paper"
+    source_scope = f"attempt:{attempt_id}" if attempt_id else "paper"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO llm_artifacts (
+                paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(paper_id, artifact_type, scope_key)
+            DO UPDATE SET content = excluded.content, model = excluded.model, updated_at = excluded.updated_at
+            """,
+            (paper_id, attempt_id, artifact_type, scope_key, answer, llm_model(), timestamp, timestamp),
+        )
+        save_chat_message(conn, session["id"], "user", prompt, source_scope)
+        assistant_message = save_chat_message(conn, session["id"], "assistant", answer, source_scope)
+        artifact = row_dict(
+            conn.execute(
+                """
+                SELECT id, paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
+                FROM llm_artifacts
+                WHERE paper_id = ? AND artifact_type = ? AND scope_key = ?
+                """,
+                (paper_id, artifact_type, scope_key),
+            ).fetchone()
+        )
+        messages = list_chat_messages(conn, session["id"])
+    return {"artifact": artifact, "assistant_message": assistant_message, "messages": messages}
 
 
 def add_paper_alias(conn: sqlite3.Connection, paper_id: int, title: str, source: str = "manual") -> None:
