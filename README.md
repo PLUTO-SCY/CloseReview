@@ -79,9 +79,9 @@ Re-running OpenReview sync will preserve your manual organization for existing a
 
 Open a paper detail page and click `AI 分析`.
 
-- `总结投稿历程` summarizes the paper's full resubmission history.
-- `总结最新一轮` summarizes the newest attempt.
-- `总结本轮` next to a timeline item summarizes that specific attempt.
+- `总结投稿历程` first summarizes each submission attempt and then synthesizes the full resubmission history, which keeps long multi-round papers within context limits.
+- `总结本轮` summarizes the currently selected attempt. Opening AI analysis directly selects the newest attempt by default; clicking `总结本轮` next to a timeline item selects that specific attempt.
+- `修改建议` targets the currently selected attempt and uses other attempts only as comparison context.
 - Free-form chat uses the current paper's attempts, decisions, scores, and clean reviews as context.
 
 Chat messages and generated summaries are stored in the local SQLite database.

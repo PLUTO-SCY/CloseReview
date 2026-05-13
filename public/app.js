@@ -30,6 +30,7 @@ let sidebarCollapsed = localStorage.getItem("papertrail.sidebar") === "collapsed
 let aiOpen = false;
 let aiChat = null;
 let aiLoading = false;
+let aiFocusedAttemptId = null;
 
 function setSidebarCollapsed(collapsed) {
   sidebarCollapsed = collapsed;
@@ -87,6 +88,19 @@ function currentView() {
 
 function selectedPaper() {
   return currentPapers.find((paper) => paper.id === selectedPaperId) || null;
+}
+
+function currentAiAttempt() {
+  const paper = selectedPaper();
+  if (!paper) return null;
+  return (paper.attempts || []).find((attempt) => attempt.id === aiFocusedAttemptId) || (paper.attempts || [])[0] || null;
+}
+
+function setAiFocusedAttempt(attemptId = null) {
+  const paper = selectedPaper();
+  const attempts = paper?.attempts || [];
+  const selected = attempts.find((attempt) => attempt.id === attemptId) || attempts[0] || null;
+  aiFocusedAttemptId = selected?.id || null;
 }
 
 function formatDate(value) {
@@ -521,6 +535,8 @@ function renderAiDrawer() {
   if (!aiOpen || !paper) return;
 
   aiTitle.textContent = paper.title;
+  setAiFocusedAttempt(aiFocusedAttemptId);
+  const attempt = currentAiAttempt();
   const configured = aiChat?.configured !== false;
   aiInput.disabled = !configured || aiLoading;
   aiForm.querySelector("button").disabled = !configured || aiLoading;
@@ -542,7 +558,9 @@ function renderAiDrawer() {
   if (!configured) {
     aiStatus.textContent = "请在 .env.local 中配置 DEEPSEEK_API_KEY，然后重启服务。";
   } else if (!aiLoading && !aiStatus.textContent) {
-    aiStatus.textContent = "已连接当前 paper 的全部投稿上下文。";
+    aiStatus.textContent = attempt
+      ? `当前轮次：${attempt.venue || "Unknown venue"} · ${formatDate(attempt.submitted_at || attempt.created_at)}`
+      : "已连接当前 paper 的全部投稿上下文。";
   }
   aiMessages.innerHTML = (aiChat?.messages || [])
     .map(
@@ -581,6 +599,7 @@ async function loadAiChat() {
 }
 
 async function openAiDrawer() {
+  setAiFocusedAttempt(aiFocusedAttemptId);
   aiOpen = true;
   renderAiDrawer();
   await loadAiChat();
@@ -621,9 +640,9 @@ async function summarizeWithAi(attemptId = null) {
     aiChat = {
       ...(aiChat || {}),
       messages: data.messages,
-      artifacts: data.artifact
+      artifacts: data.artifacts || (data.artifact
         ? [data.artifact].concat((aiChat?.artifacts || []).filter((artifact) => artifact.id !== data.artifact.id))
-        : aiChat?.artifacts || [],
+        : aiChat?.artifacts || []),
     };
     aiStatus.textContent = "";
   } catch (error) {
@@ -672,7 +691,9 @@ window.addEventListener("hashchange", () => {
 paperList.addEventListener("click", (event) => {
   const summarizeButton = event.target.closest("[data-ai-summarize-attempt]");
   if (summarizeButton) {
-    openAiDrawer().then(() => summarizeWithAi(Number(summarizeButton.dataset.aiSummarizeAttempt)));
+    const attemptId = Number(summarizeButton.dataset.aiSummarizeAttempt);
+    setAiFocusedAttempt(attemptId);
+    openAiDrawer().then(() => summarizeWithAi(attemptId));
     return;
   }
   const card = event.target.closest(".overview-card");
@@ -701,12 +722,15 @@ aiDrawer.addEventListener("click", (event) => {
   if (actionButton.dataset.aiAction === "paper-summary") {
     summarizeWithAi();
   }
-  if (actionButton.dataset.aiAction === "latest-summary") {
-    const latest = (paper.attempts || [])[0];
-    summarizeWithAi(latest?.id || null);
+  if (actionButton.dataset.aiAction === "attempt-summary") {
+    summarizeWithAi(currentAiAttempt()?.id || null);
   }
   if (actionButton.dataset.aiAction === "revision-advice") {
-    sendAiMessage("请基于这篇 paper 的所有投稿和审稿意见，给出下一步修改优先级和具体行动建议。");
+    const attempt = currentAiAttempt();
+    sendAiMessage(
+      "请只针对当前轮次投稿的审稿意见，给出下一步修改优先级和具体行动建议。其他投稿轮次只作为对比参考。",
+      attempt?.id || null
+    );
   }
 });
 

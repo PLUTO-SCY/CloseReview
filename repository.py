@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from db import connect
 from llm_client import chat_completion, llm_configured, llm_model
@@ -456,6 +457,21 @@ def attempt_summary_label(conn: sqlite3.Connection, attempt_id: int | None) -> s
     return f"{attempt['venue'] or 'Unknown venue'} · {date} · {decision} · {attempt['title']}"
 
 
+def attempt_rows(conn: sqlite3.Connection, paper_id: int) -> list[dict]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT id, venue, title, submitted_at, created_at, decision
+            FROM attempts
+            WHERE paper_id = ?
+            ORDER BY COALESCE(submitted_at, created_at) ASC, id ASC
+            """,
+            (paper_id,),
+        )
+    ]
+
+
 def chat_system_prompt() -> str:
     return (
         "You are PaperTrail's research assistant for an AI PhD student. "
@@ -514,6 +530,114 @@ def summary_prompt(attempt_id: int | None, attempt_label: str | None = None) -> 
     )
 
 
+def generate_attempt_summary(paper_id: int, attempt_id: int) -> dict:
+    with connect() as conn:
+        attempt_label = attempt_summary_label(conn, attempt_id)
+        context = paper_context_text(conn, paper_id, attempt_id)
+    prompt = summary_prompt(attempt_id, attempt_label)
+    answer = chat_completion(
+        [
+            {"role": "system", "content": chat_system_prompt()},
+            {"role": "user", "content": f"PaperTrail context:\n\n{context}\n\nTask:\n{prompt}"},
+        ]
+    )
+    return {
+        "paper_id": paper_id,
+        "attempt_id": attempt_id,
+        "prompt": prompt,
+        "answer": answer,
+        "artifact_type": "attempt_summary",
+        "scope_key": str(attempt_id),
+    }
+
+
+def upsert_llm_artifact(conn: sqlite3.Connection, summary: dict) -> dict:
+    timestamp = now_iso()
+    conn.execute(
+        """
+        INSERT INTO llm_artifacts (
+            paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(paper_id, artifact_type, scope_key)
+        DO UPDATE SET content = excluded.content, model = excluded.model, updated_at = excluded.updated_at
+        """,
+        (
+            summary["paper_id"],
+            summary.get("attempt_id"),
+            summary["artifact_type"],
+            summary["scope_key"],
+            summary["answer"],
+            llm_model(),
+            timestamp,
+            timestamp,
+        ),
+    )
+    return row_dict(
+        conn.execute(
+            """
+            SELECT id, paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
+            FROM llm_artifacts
+            WHERE paper_id = ? AND artifact_type = ? AND scope_key = ?
+            """,
+            (summary["paper_id"], summary["artifact_type"], summary["scope_key"]),
+        ).fetchone()
+    )
+
+
+def generate_paper_summary(paper_id: int) -> dict:
+    with connect() as conn:
+        paper = conn.execute("SELECT title FROM papers WHERE id = ?", (paper_id,)).fetchone()
+        if not paper:
+            raise ValueError("Paper not found.")
+        attempts = attempt_rows(conn, paper_id)
+    if not attempts:
+        raise ValueError("No attempts found for this paper.")
+
+    attempt_summaries = []
+    max_workers = min(4, len(attempts))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(generate_attempt_summary, paper_id, attempt["id"]): attempt for attempt in attempts}
+        for future in as_completed(future_map):
+            summary = future.result()
+            attempt_summaries.append(summary)
+    order = {attempt["id"]: index for index, attempt in enumerate(attempts)}
+    attempt_summaries.sort(key=lambda item: order.get(item["attempt_id"], 0))
+
+    with connect() as conn:
+        for summary in attempt_summaries:
+            upsert_llm_artifact(conn, summary)
+
+    digest_lines = [f"Canonical paper title: {paper['title']}", "", "Per-attempt summaries from earliest to latest:"]
+    for attempt, summary in zip(attempts, attempt_summaries):
+        date = attempt["submitted_at"] or attempt["created_at"] or "Unknown date"
+        decision = attempt["decision"] or "Unknown decision"
+        digest_lines.extend(
+            [
+                "",
+                f"Attempt {attempt['id']}: {attempt['venue'] or 'Unknown venue'} · {date} · {decision}",
+                f"Title: {attempt['title']}",
+                summary["answer"],
+            ]
+        )
+    prompt = summary_prompt(None)
+    final_answer = chat_completion(
+        [
+            {"role": "system", "content": chat_system_prompt()},
+            {"role": "user", "content": "\n".join(digest_lines) + f"\n\nTask:\n{prompt}"},
+        ]
+    )
+    return {
+        "paper_id": paper_id,
+        "attempt_id": None,
+        "prompt": prompt,
+        "answer": final_answer,
+        "artifact_type": "paper_summary",
+        "scope_key": "paper",
+        "attempt_summaries": attempt_summaries,
+    }
+
+
 def summarize_paper(payload: dict) -> dict:
     paper_id = int(payload.get("paper_id") or 0)
     attempt_id = int(payload.get("attempt_id") or 0) or None
@@ -521,49 +645,19 @@ def summarize_paper(payload: dict) -> dict:
         raise ValueError("paper_id is required.")
     if not llm_configured():
         raise ValueError("Missing DEEPSEEK_API_KEY. Add it to `.env.local` and restart PaperTrail.")
-    with connect() as conn:
-        session = ensure_chat_session(conn, paper_id)
-        attempt_label = attempt_summary_label(conn, attempt_id)
-        context = paper_context_text(conn, paper_id, attempt_id)
-    prompt = summary_prompt(attempt_id, attempt_label)
-
-    answer = chat_completion(
-        [
-            {"role": "system", "content": chat_system_prompt()},
-            {"role": "user", "content": f"PaperTrail context:\n\n{context}\n\nTask:\n{prompt}"},
-        ]
-    )
-
-    timestamp = now_iso()
-    artifact_type = "attempt_summary" if attempt_id else "paper_summary"
-    scope_key = str(attempt_id) if attempt_id else "paper"
+    if attempt_id:
+        summary = generate_attempt_summary(paper_id, attempt_id)
+    else:
+        summary = generate_paper_summary(paper_id)
     source_scope = f"attempt:{attempt_id}" if attempt_id else "paper"
     with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO llm_artifacts (
-                paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(paper_id, artifact_type, scope_key)
-            DO UPDATE SET content = excluded.content, model = excluded.model, updated_at = excluded.updated_at
-            """,
-            (paper_id, attempt_id, artifact_type, scope_key, answer, llm_model(), timestamp, timestamp),
-        )
-        save_chat_message(conn, session["id"], "user", prompt, source_scope)
-        assistant_message = save_chat_message(conn, session["id"], "assistant", answer, source_scope)
-        artifact = row_dict(
-            conn.execute(
-                """
-                SELECT id, paper_id, attempt_id, artifact_type, scope_key, content, model, created_at, updated_at
-                FROM llm_artifacts
-                WHERE paper_id = ? AND artifact_type = ? AND scope_key = ?
-                """,
-                (paper_id, artifact_type, scope_key),
-            ).fetchone()
-        )
+        session = ensure_chat_session(conn, paper_id)
+        artifact = upsert_llm_artifact(conn, summary)
+        save_chat_message(conn, session["id"], "user", summary["prompt"], source_scope)
+        assistant_message = save_chat_message(conn, session["id"], "assistant", summary["answer"], source_scope)
+        artifacts = list_llm_artifacts(conn, paper_id)
         messages = list_chat_messages(conn, session["id"])
-    return {"artifact": artifact, "assistant_message": assistant_message, "messages": messages}
+    return {"artifact": artifact, "artifacts": artifacts, "assistant_message": assistant_message, "messages": messages}
 
 
 def add_paper_alias(conn: sqlite3.Connection, paper_id: int, title: str, source: str = "manual") -> None:
