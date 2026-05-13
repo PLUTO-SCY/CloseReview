@@ -85,18 +85,36 @@ DEEPSEEK_REASONING_EFFORT=high
 
 OpenReview sync requires your OpenReview account credentials. AI analysis requires `DEEPSEEK_API_KEY`.
 
-### 3. Install Dependencies
+### 3. Create a Virtual Environment
 
-The app itself uses Python standard library for the local web server, SQLite storage, and DeepSeek-compatible API calls. The only third-party Python dependency is the official OpenReview client, which is required for live OpenReview import and account sync:
+Create an isolated Python environment before installing dependencies:
 
 ```bash
-pip3 install openreview-py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 ```
 
-### 4. Start
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
+
+### 4. Install Dependencies
+
+The app itself uses Python standard library for the local web server, SQLite storage, and DeepSeek-compatible API calls. Dependencies are listed in `requirements.txt`; currently the only third-party Python dependency is the official OpenReview client, which is required for live OpenReview import and account sync:
 
 ```bash
-python3 start.py
+python -m pip install -r requirements.txt
+```
+
+### 5. Start
+
+```bash
+python start.py
 ```
 
 Open:

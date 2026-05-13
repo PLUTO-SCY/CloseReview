@@ -50,16 +50,24 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
 ```
 
-Install the official OpenReview Python client when you want live imports:
+Create and activate a virtual environment:
 
 ```bash
-pip3 install openreview-py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+Install dependencies:
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
 Then start the app:
 
 ```bash
-python3 start.py
+python start.py
 ```
 
 Open `http://127.0.0.1:8000`.

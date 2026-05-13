@@ -85,18 +85,36 @@ DEEPSEEK_REASONING_EFFORT=high
 
 OpenReview 同步需要账号密码；AI 分析需要 `DEEPSEEK_API_KEY`。
 
-### 3. 安装依赖
+### 3. 创建虚拟环境
 
-项目本身使用 Python 标准库启动本地服务、管理 SQLite 数据库，并调用 DeepSeek-compatible API。唯一的第三方 Python 依赖是官方 OpenReview 客户端，用于实时导入 OpenReview 数据和账号同步：
+安装依赖前，建议先创建独立的 Python 虚拟环境：
 
 ```bash
-pip3 install openreview-py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 ```
 
-### 4. 启动
+Windows PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
+
+### 4. 安装依赖
+
+项目本身使用 Python 标准库启动本地服务、管理 SQLite 数据库，并调用 DeepSeek-compatible API。依赖统一写在 `requirements.txt` 中；目前唯一的第三方 Python 依赖是官方 OpenReview 客户端，用于实时导入 OpenReview 数据和账号同步：
 
 ```bash
-python3 start.py
+python -m pip install -r requirements.txt
+```
+
+### 5. 启动
+
+```bash
+python start.py
 ```
 
 打开浏览器访问：

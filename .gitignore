@@ -1,5 +1,6 @@
 .env
 .env.local
+.venv/
 data/*.sqlite3
 __pycache__/
 *.pyc
