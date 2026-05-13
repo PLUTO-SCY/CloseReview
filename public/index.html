@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaperTrail</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <div>
+            <p class="eyebrow">PaperTrail</p>
+            <h1>投稿追踪台</h1>
+          </div>
+          <button id="sidebar-toggle" type="button" class="sidebar-toggle" aria-label="收起侧边栏" title="收起侧边栏">‹</button>
+        </div>
+        <div class="sidebar-content">
+          <div class="panel compact nav-panel">
+            <label>Workspace</label>
+            <button id="nav-overview" type="button" class="secondary">论文总览</button>
+            <button id="nav-visuals" type="button" class="secondary">投稿可视化</button>
+          </div>
+          <form id="import-form" class="panel">
+            <label for="openreview-url">手动导入单篇投稿</label>
+            <div class="inline-form">
+              <input id="openreview-url" name="url" placeholder="https://openreview.net/forum?id=..." autocomplete="off" />
+              <button type="submit">导入</button>
+            </div>
+            <p id="import-status" class="status"></p>
+          </form>
+          <div class="panel compact">
+            <label>OpenReview account</label>
+            <button id="sync-account" type="button">同步我的投稿</button>
+            <p id="sync-status" class="status"></p>
+          </div>
+          <form id="manual-form" class="panel compact">
+            <label for="paper-title">手动添加</label>
+            <input id="paper-title" name="title" placeholder="Paper title" />
+            <input id="paper-venue" name="venue" placeholder="Venue, e.g. ICLR 2026" />
+            <button type="submit">添加论文</button>
+          </form>
+        </div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Workspace</p>
+            <h2 id="view-title">Paper overview</h2>
+          </div>
+          <button id="back-overview" type="button" class="secondary hidden">返回总览</button>
+          <button id="organize-toggle" type="button" class="secondary">整理模式</button>
+          <div class="stats">
+            <div><strong id="paper-count">0</strong><span>papers</span></div>
+            <div><strong id="attempt-count">0</strong><span>attempts</span></div>
+            <div><strong id="review-count">0</strong><span>reviews</span></div>
+          </div>
+        </header>
+        <section id="papers" class="papers"></section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
